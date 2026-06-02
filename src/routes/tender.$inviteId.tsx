@@ -2,7 +2,6 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { fetchTenderDetail } from '@/server/tenders'
-import { analyzeTenderWithAI } from '@/server/ai'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableRow } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
@@ -69,13 +68,7 @@ function TenderDetailPage() {
         }
       }
     } catch (error) {
-      // Fallback to non-streaming API if the provider or runtime cannot stream.
-      try {
-        const result = await analyzeTenderWithAI({ data: { inviteId } })
-        setAiAnalysis(result.analysis)
-      } catch {
-        setAiAnalysis(error instanceof Error ? error.message : 'AI analysis failed')
-      }
+      setAiAnalysis(error instanceof Error ? error.message : 'AI analysis failed')
     } finally {
       setAiLoading(false)
     }
