@@ -37,7 +37,9 @@ function TenderDetailPage() {
       }
       setPredictions(result.predictions);
     } catch (error) {
-      setAiError(error instanceof Error ? error.message : "AI prediction failed");
+      setAiError(
+        error instanceof Error ? error.message : "AI prediction failed",
+      );
     } finally {
       setAiLoading(false);
     }
@@ -55,6 +57,7 @@ function TenderDetailPage() {
       <Card className="mb-6">
         <CardHeader>
           <CardTitle>AI 得標廠商預測</CardTitle>
+          <p className="text-black/60 text-sm">資料為 AI 生成的資訊</p>
         </CardHeader>
         <CardContent>
           <Button onClick={runAiAnalysis} disabled={aiLoading}>
@@ -69,6 +72,16 @@ function TenderDetailPage() {
             <div className="mt-4 overflow-hidden rounded-md border">
               <Table>
                 <TableBody>
+                  <TableRow className="bg-muted hover:bg-muted">
+                    <TableCell className="w-16 font-semibold">機率</TableCell>
+                    <TableCell className="font-semibold">廠商名稱</TableCell>
+                    <TableCell className="w-32 text-right font-semibold">
+                      預測原因
+                    </TableCell>
+                    <TableCell className="w-32 text-right font-mono font-semibold">
+                      歷史得標金額
+                    </TableCell>
+                  </TableRow>
                   {predictions.map((prediction, index) => (
                     <TableRow key={`${prediction.company}-${index}`}>
                       <TableCell className="w-16 font-semibold">
@@ -77,18 +90,11 @@ function TenderDetailPage() {
                       <TableCell className="font-medium">
                         {prediction.company}
                       </TableCell>
+                      <TableCell className="w-32 text-right">
+                        {prediction.why}
+                      </TableCell>
                       <TableCell className="whitespace-nowrap text-right font-mono">
                         {prediction.amount}
-                      </TableCell>
-                      <TableCell className="w-32 text-right">
-                        <details className="text-sm">
-                          <summary className="cursor-pointer text-primary hover:underline">
-                            查看原因
-                          </summary>
-                          <p className="mt-2 rounded-md bg-muted p-3 text-left text-muted-foreground">
-                            {prediction.why}
-                          </p>
-                        </details>
                       </TableCell>
                     </TableRow>
                   ))}
