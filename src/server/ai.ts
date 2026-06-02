@@ -102,7 +102,7 @@ async function buildAnalysisContext(inviteId: string) {
     .select()
     .from(tenderDetailsTable)
     .orderBy(desc(tenderDetailsTable.updatedAt))
-    .limit(500)
+    .limit(250)
 
   const examples = rows
     .map((row) => compactDetail(row.detailJson as Record<string, string>))
@@ -110,7 +110,7 @@ async function buildAnalysisContext(inviteId: string) {
     .map((item) => ({ ...item, score: scoreSimilarity(target, item) }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 30)
+    .slice(0, 12)
 
   const winnerCounts = examples.reduce<Record<string, number>>((acc, item) => {
     acc[item.winner] = (acc[item.winner] || 0) + 1
@@ -120,9 +120,11 @@ async function buildAnalysisContext(inviteId: string) {
   return { target, examples, winnerCounts }
 }
 
-export async function buildAnalysisPrompt(inviteId: string) {
-  const { target, examples, winnerCounts } = await buildAnalysisContext(inviteId)
-
+function buildAnalysisPromptFromContext({
+  target,
+  examples,
+  winnerCounts,
+}: Awaited<ReturnType<typeof buildAnalysisContext>>) {
   return `You analyze tender procurement records and provide cautious predictive analysis using historical data only.
 
 你是政府採購資料分析助理。請根據歷史標案資料，分析目前標案可能的得標廠商。
@@ -140,11 +142,15 @@ export async function buildAnalysisPrompt(inviteId: string) {
 目前標案：
 ${JSON.stringify(target, null, 2)}
 
-相似歷史標案（最多30筆）：
+相似歷史標案：
 ${JSON.stringify(examples, null, 2)}
 
 歷史得標廠商次數統計：
 ${JSON.stringify(winnerCounts, null, 2)}`
+}
+
+export async function buildAnalysisPrompt(inviteId: string) {
+  return buildAnalysisPromptFromContext(await buildAnalysisContext(inviteId))
 }
 
 export type TenderPrediction = {
@@ -235,16 +241,22 @@ export async function predictTenderWinnersJson(inviteId: string): Promise<{
 
   const context = await buildAnalysisContext(inviteId)
   const fallback = fallbackPredictions(context.examples)
-  const prompt = `${await buildAnalysisPrompt(inviteId)}
+  const prompt = `${buildAnalysisPromptFromContext(context)}
 
 請呼叫 submit_predictions 工具回傳結果。不要在 content 中輸出文字。若資料有限，仍須從相似歷史標案中選出最合理候選，不要回傳空陣列。`
 
-  const response = await fetch(`${OPENAI_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 6000)
+
+  let response: Response
+  try {
+    response = await fetch(`${OPENAI_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
     body: JSON.stringify({
       model: OPENAI_MODEL,
       messages: [{ role: 'user', content: prompt }],
@@ -280,9 +292,19 @@ export async function predictTenderWinnersJson(inviteId: string): Promise<{
           },
         },
       ],
-      tool_choice: { type: 'function', function: { name: 'submit_predictions' } },
-    }),
-  })
+        tool_choice: { type: 'function', function: { name: 'submit_predictions' } },
+      }),
+    })
+  } catch (error) {
+    if (fallback.length) return { ok: true, predictions: fallback }
+    return {
+      ok: false,
+      predictions: [],
+      error: error instanceof Error ? error.message : 'AI request failed.',
+    }
+  } finally {
+    clearTimeout(timeout)
+  }
 
   if (!response.ok) {
     const text = await response.text()
