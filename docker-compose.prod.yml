@@ -1,0 +1,36 @@
+services:
+  app:
+    image: ghcr.io/jsserve-org/where-is-my-money-going-tpcu-editon:latest
+    container_name: tpcu-pay001-app
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://tpcu:tpcu_password@postgres:5432/tpcu_tenders
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+    ports:
+      - "31000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: tpcu-pay001-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tpcu_tenders
+      POSTGRES_USER: tpcu
+      POSTGRES_PASSWORD: tpcu_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tpcu -d tpcu_tenders"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:

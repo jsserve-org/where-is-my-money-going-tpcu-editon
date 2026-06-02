@@ -6,7 +6,12 @@ COPY package*.json ./
 RUN npm install
 
 COPY . .
+RUN npm run build
+
+ENV NODE_ENV=production
+ENV HOST=0.0.0.0
+ENV PORT=3000
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "npm run db:setup && npm run dev -- --host 0.0.0.0"]
+CMD ["sh", "-c", "npm run db:setup && node .output/server/index.mjs"]
