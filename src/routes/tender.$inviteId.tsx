@@ -1,8 +1,10 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
-import ReactMarkdown from "react-markdown";
 import { fetchTenderDetail } from "@/server/tenders";
-import { streamTenderAnalysisWithAI } from "@/server/ai-stream";
+import {
+  predictTenderWinners,
+  type TenderPredictionResult,
+} from "@/server/ai-predictions";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
@@ -16,58 +18,26 @@ export const Route = createFileRoute("/tender/$inviteId")({
   pendingComponent: DetailLoading,
 });
 
-function parseOpenAIStreamChunk(chunk: string) {
-  let text = "";
-  for (const line of chunk.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("data:")) continue;
-    const payload = trimmed.slice(5).trim();
-    if (!payload || payload === "[DONE]") continue;
-    try {
-      const json = JSON.parse(payload);
-      text += json?.choices?.[0]?.delta?.content || "";
-    } catch {
-      // Some OpenAI-compatible providers may stream plain text or partial chunks.
-    }
-  }
-  return text;
-}
-
 function TenderDetailPage() {
   const detail = Route.useLoaderData();
   const { inviteId } = Route.useParams();
   const [aiLoading, setAiLoading] = useState(false);
-  const [aiAnalysis, setAiAnalysis] = useState("");
+  const [predictions, setPredictions] = useState<TenderPredictionResult[]>([]);
+  const [aiError, setAiError] = useState("");
 
   const runAiAnalysis = async () => {
     setAiLoading(true);
-    setAiAnalysis("");
+    setPredictions([]);
+    setAiError("");
     try {
-      const response = await streamTenderAnalysisWithAI({ data: { inviteId } });
-      if (!response.ok || !response.body) {
-        setAiAnalysis(await response.text());
+      const result = await predictTenderWinners({ data: { inviteId } });
+      if (!result.ok) {
+        setAiError(result.error || "AI prediction failed");
         return;
       }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let done = false;
-
-      while (!done) {
-        const result = await reader.read();
-        done = result.done;
-        if (result.value) {
-          const chunk = decoder.decode(result.value, { stream: !done });
-          const content = parseOpenAIStreamChunk(chunk);
-          if (content) {
-            setAiAnalysis((prev) => prev + content);
-          }
-        }
-      }
+      setPredictions(result.predictions);
     } catch (error) {
-      setAiAnalysis(
-        error instanceof Error ? error.message : "AI analysis failed",
-      );
+      setAiError(error instanceof Error ? error.message : "AI prediction failed");
     } finally {
       setAiLoading(false);
     }
@@ -88,11 +58,42 @@ function TenderDetailPage() {
         </CardHeader>
         <CardContent>
           <Button onClick={runAiAnalysis} disabled={aiLoading}>
-            {aiLoading ? "分析中（串流輸出）..." : "用歷史資料預測可能得標廠商"}
+            {aiLoading ? "分析中..." : "用歷史資料預測可能得標廠商"}
           </Button>
-          {aiAnalysis && (
-            <div className="prose prose-sm mt-4 max-w-none rounded-md border bg-muted p-4 leading-6 dark:prose-invert">
-              <ReactMarkdown>{aiAnalysis}</ReactMarkdown>
+          {aiError && (
+            <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+              {aiError}
+            </div>
+          )}
+          {predictions.length > 0 && (
+            <div className="mt-4 overflow-hidden rounded-md border">
+              <Table>
+                <TableBody>
+                  {predictions.map((prediction, index) => (
+                    <TableRow key={`${prediction.company}-${index}`}>
+                      <TableCell className="w-16 font-semibold">
+                        {prediction.percent}%
+                      </TableCell>
+                      <TableCell className="font-medium">
+                        {prediction.company}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-right font-mono">
+                        {prediction.amount}
+                      </TableCell>
+                      <TableCell className="w-32 text-right">
+                        <details className="text-sm">
+                          <summary className="cursor-pointer text-primary hover:underline">
+                            查看原因
+                          </summary>
+                          <p className="mt-2 rounded-md bg-muted p-3 text-left text-muted-foreground">
+                            {prediction.why}
+                          </p>
+                        </details>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             </div>
           )}
         </CardContent>

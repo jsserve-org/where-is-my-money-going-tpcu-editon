@@ -59,15 +59,13 @@ export async function buildAnalysisPrompt(inviteId: string) {
 
 你是政府採購資料分析助理。請根據歷史標案資料，分析目前標案可能的得標廠商。
 
-輸出限制：
-- 只輸出純文字清單，不要 Markdown。
-- 不要輸出標題、說明、理由、風險、免責聲明或補充建議。
-- 每行只包含「百分比 公司名稱 預估得標金額」。
-- 百分比請用整數，金額請用新台幣格式。
-- 範例：72% 某某有限公司 NT$1,234,567
-- 最多列出 5 家公司。
-- 預估得標金額請根據目前標案預算/採購金額、底價、以及相似歷史標案決標金額推估。
-- 如果資料不足，也只輸出最可能的公司與預估金額清單；不要說明資料不足。
+分析要求：
+- 預測最多 5 家可能得標廠商。
+- 每筆都要有 percent、company、amount、why。
+- percent 請用 0 到 100 的整數。
+- amount 請用新台幣格式，例如：NT$1,234,567。
+- amount 請根據目前標案預算/採購金額、底價、以及相似歷史標案決標金額推估。
+- why 請用簡短繁體中文說明依據。
 
 目前標案：
 ${JSON.stringify(target, null, 2)}
@@ -79,11 +77,127 @@ ${JSON.stringify(examples, null, 2)}
 ${JSON.stringify(winnerCounts, null, 2)}`
 }
 
+export type TenderPrediction = {
+  percent: number
+  company: string
+  amount: string
+  why: string
+}
+
+function normalizePredictions(value: unknown): TenderPrediction[] {
+  const list = Array.isArray(value)
+    ? value
+    : Array.isArray((value as { predictions?: unknown })?.predictions)
+      ? (value as { predictions: unknown[] }).predictions
+      : []
+
+  return list
+    .map((item) => {
+      const record = item as Record<string, unknown>
+      return {
+        percent: Number(record.percent ?? record.probability ?? 0),
+        company: String(record.company ?? record.companyName ?? ''),
+        amount: String(record.amount ?? record.estimatedAmount ?? ''),
+        why: String(record.why ?? record.reason ?? ''),
+      }
+    })
+    .filter((item) => item.company && item.amount)
+    .slice(0, 5)
+}
+
 function missingKeyResponse() {
   return new Response('Missing OPENAI_API_KEY. Add OPENAI_API_KEY, and optionally OPENAI_BASE_URL / OPENAI_MODEL, then restart the app.', {
     status: 500,
     headers: { 'Content-Type': 'text/plain; charset=utf-8' },
   })
+}
+
+export async function predictTenderWinnersJson(inviteId: string): Promise<{
+  ok: boolean
+  predictions: TenderPrediction[]
+  error?: string
+}> {
+  if (!process.env.OPENAI_API_KEY) {
+    return {
+      ok: false,
+      predictions: [],
+      error: 'Missing OPENAI_API_KEY. Add OPENAI_API_KEY, and optionally OPENAI_BASE_URL / OPENAI_MODEL, then restart the app.',
+    }
+  }
+
+  const prompt = `${await buildAnalysisPrompt(inviteId)}
+
+請呼叫 submit_predictions 工具回傳結果。不要在 content 中輸出文字。`
+
+  const response = await fetch(`${OPENAI_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.2,
+      tools: [
+        {
+          type: 'function',
+          function: {
+            name: 'submit_predictions',
+            description: 'Return likely tender winning companies as structured JSON.',
+            parameters: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                predictions: {
+                  type: 'array',
+                  maxItems: 5,
+                  items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      percent: { type: 'integer', minimum: 0, maximum: 100 },
+                      company: { type: 'string' },
+                      amount: { type: 'string', description: 'Estimated award amount, e.g. NT$1,234,567' },
+                      why: { type: 'string', description: 'Short Traditional Chinese reason for this prediction.' },
+                    },
+                    required: ['percent', 'company', 'amount', 'why'],
+                  },
+                },
+              },
+              required: ['predictions'],
+            },
+          },
+        },
+      ],
+      tool_choice: { type: 'function', function: { name: 'submit_predictions' } },
+    }),
+  })
+
+  if (!response.ok) {
+    const text = await response.text()
+    return { ok: false, predictions: [], error: `OpenAI-compatible API error (${response.status}): ${text}` }
+  }
+
+  const json = await response.json()
+  const message = json?.choices?.[0]?.message
+  const args = message?.tool_calls?.[0]?.function?.arguments
+  try {
+    if (args) {
+      return { ok: true, predictions: normalizePredictions(JSON.parse(args)) }
+    }
+    if (message?.content) {
+      return { ok: true, predictions: normalizePredictions(JSON.parse(message.content)) }
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      predictions: [],
+      error: error instanceof Error ? error.message : 'Could not parse AI JSON response.',
+    }
+  }
+
+  return { ok: false, predictions: [], error: 'No predictions returned.' }
 }
 
 export const analyzeTenderWithAI = createServerFn({ method: 'POST' })
