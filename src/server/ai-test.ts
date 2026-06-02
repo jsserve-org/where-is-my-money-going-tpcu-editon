@@ -16,8 +16,7 @@ async function main() {
     body: JSON.stringify({
       model: OPENAI_MODEL,
       messages: [
-        { role: 'system', content: 'You are a concise API smoke test.' },
-        { role: 'user', content: 'Reply with OK if this OpenAI-compatible API works.' },
+        { role: 'user', content: 'You are a concise API smoke test. Reply with OK if this OpenAI-compatible API works.' },
       ],
       temperature: 0,
     }),

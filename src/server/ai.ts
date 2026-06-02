@@ -78,10 +78,9 @@ export const analyzeTenderWithAI = createServerFn({ method: 'POST' })
         model: OPENAI_MODEL,
         messages: [
           {
-            role: 'system',
-            content: 'You analyze tender procurement records and provide cautious predictive analysis using historical data only.',
+            role: 'user',
+            content: `You analyze tender procurement records and provide cautious predictive analysis using historical data only.\n\n${prompt}`,
           },
-          { role: 'user', content: prompt },
         ],
         temperature: 0.2,
       }),
