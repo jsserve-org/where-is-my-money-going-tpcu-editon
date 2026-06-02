@@ -33,6 +33,56 @@ function scoreSimilarity(target: ReturnType<typeof compactDetail>, item: ReturnT
   return score
 }
 
+export async function buildAnalysisPrompt(inviteId: string) {
+  const targetDetail = await fetchTenderDetail({ data: { inviteId } })
+  const target = compactDetail(targetDetail as Record<string, string>)
+
+  const rows = await db
+    .select()
+    .from(tenderDetailsTable)
+    .orderBy(desc(tenderDetailsTable.updatedAt))
+    .limit(500)
+
+  const examples = rows
+    .map((row) => compactDetail(row.detailJson as Record<string, string>))
+    .filter((item) => item.winner && item.caseNo !== target.caseNo)
+    .map((item) => ({ ...item, score: scoreSimilarity(target, item) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 30)
+
+  const winnerCounts = examples.reduce<Record<string, number>>((acc, item) => {
+    acc[item.winner] = (acc[item.winner] || 0) + 1
+    return acc
+  }, {})
+
+  return `You analyze tender procurement records and provide cautious predictive analysis using historical data only.
+
+你是政府採購資料分析助理。請根據歷史標案資料，分析目前標案可能的得標廠商。
+
+限制：
+- 不要保證結果，只能給機率/信心與理由。
+- 如果資料不足，明確說資料不足。
+- 請用繁體中文。
+- 請用 Markdown 輸出。
+- 請輸出：1) 最可能得標廠商排名 2) 依據 3) 風險/不確定性 4) 建議補充資料。
+
+目前標案：
+${JSON.stringify(target, null, 2)}
+
+相似歷史標案（最多30筆）：
+${JSON.stringify(examples, null, 2)}
+
+歷史得標廠商次數統計：
+${JSON.stringify(winnerCounts, null, 2)}`
+}
+
+function missingKeyResponse() {
+  return new Response('Missing OPENAI_API_KEY. Add OPENAI_API_KEY, and optionally OPENAI_BASE_URL / OPENAI_MODEL, then restart the app.', {
+    status: 500,
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+  })
+}
+
 export const analyzeTenderWithAI = createServerFn({ method: 'POST' })
   .inputValidator((input: { inviteId: string }) => input)
   .handler(async (ctx) => {
@@ -45,28 +95,7 @@ export const analyzeTenderWithAI = createServerFn({ method: 'POST' })
       }
     }
 
-    const targetDetail = await fetchTenderDetail({ data: { inviteId } })
-    const target = compactDetail(targetDetail as Record<string, string>)
-
-    const rows = await db
-      .select()
-      .from(tenderDetailsTable)
-      .orderBy(desc(tenderDetailsTable.updatedAt))
-      .limit(500)
-
-    const examples = rows
-      .map((row) => compactDetail(row.detailJson as Record<string, string>))
-      .filter((item) => item.winner && item.caseNo !== target.caseNo)
-      .map((item) => ({ ...item, score: scoreSimilarity(target, item) }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 30)
-
-    const winnerCounts = examples.reduce<Record<string, number>>((acc, item) => {
-      acc[item.winner] = (acc[item.winner] || 0) + 1
-      return acc
-    }, {})
-
-    const prompt = `你是政府採購資料分析助理。請根據歷史標案資料，分析目前標案可能的得標廠商。\n\n限制：\n- 不要保證結果，只能給機率/信心與理由。\n- 如果資料不足，明確說資料不足。\n- 請用繁體中文。\n- 請輸出：1) 最可能得標廠商排名 2) 依據 3) 風險/不確定性 4) 建議補充資料。\n\n目前標案：\n${JSON.stringify(target, null, 2)}\n\n相似歷史標案（最多30筆）：\n${JSON.stringify(examples, null, 2)}\n\n歷史得標廠商次數統計：\n${JSON.stringify(winnerCounts, null, 2)}`
+    const prompt = await buildAnalysisPrompt(inviteId)
 
     const response = await fetch(`${OPENAI_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
@@ -76,12 +105,7 @@ export const analyzeTenderWithAI = createServerFn({ method: 'POST' })
       },
       body: JSON.stringify({
         model: OPENAI_MODEL,
-        messages: [
-          {
-            role: 'user',
-            content: `You analyze tender procurement records and provide cautious predictive analysis using historical data only.\n\n${prompt}`,
-          },
-        ],
+        messages: [{ role: 'user', content: prompt }],
         temperature: 0.2,
       }),
     })
@@ -95,3 +119,39 @@ export const analyzeTenderWithAI = createServerFn({ method: 'POST' })
     const analysis = json?.choices?.[0]?.message?.content || 'No analysis returned.'
     return { ok: true, analysis }
   })
+
+export async function streamTenderAnalysisResponse(inviteId: string) {
+  if (!process.env.OPENAI_API_KEY) return missingKeyResponse()
+
+  const prompt = await buildAnalysisPrompt(inviteId)
+
+  const response = await fetch(`${OPENAI_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.2,
+      stream: true,
+    }),
+  })
+
+  if (!response.ok || !response.body) {
+    const text = await response.text()
+    return new Response(`OpenAI-compatible API error (${response.status}): ${text}`, {
+      status: response.status,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    })
+  }
+
+  return new Response(response.body, {
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    },
+  })
+}

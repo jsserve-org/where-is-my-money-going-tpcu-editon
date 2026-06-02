@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useState } from 'react'
+import ReactMarkdown from 'react-markdown'
 import { fetchTenderDetail } from '@/server/tenders'
 import { analyzeTenderWithAI } from '@/server/ai'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -15,6 +16,23 @@ export const Route = createFileRoute('/tender/$inviteId')({
   pendingComponent: DetailLoading,
 })
 
+function parseOpenAIStreamChunk(chunk: string) {
+  let text = ''
+  for (const line of chunk.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data:')) continue
+    const payload = trimmed.slice(5).trim()
+    if (!payload || payload === '[DONE]') continue
+    try {
+      const json = JSON.parse(payload)
+      text += json?.choices?.[0]?.delta?.content || ''
+    } catch {
+      // Some OpenAI-compatible providers may stream plain text or partial chunks.
+    }
+  }
+  return text
+}
+
 function TenderDetailPage() {
   const detail = Route.useLoaderData()
   const { inviteId } = Route.useParams()
@@ -25,10 +43,39 @@ function TenderDetailPage() {
     setAiLoading(true)
     setAiAnalysis('')
     try {
-      const result = await analyzeTenderWithAI({ data: { inviteId } })
-      setAiAnalysis(result.analysis)
+      const response = await fetch('/api/ai-stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inviteId }),
+      })
+      if (!response.ok || !response.body) {
+        setAiAnalysis(await response.text())
+        return
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let done = false
+
+      while (!done) {
+        const result = await reader.read()
+        done = result.done
+        if (result.value) {
+          const chunk = decoder.decode(result.value, { stream: !done })
+          const content = parseOpenAIStreamChunk(chunk)
+          if (content) {
+            setAiAnalysis((prev) => prev + content)
+          }
+        }
+      }
     } catch (error) {
-      setAiAnalysis(error instanceof Error ? error.message : 'AI analysis failed')
+      // Fallback to non-streaming API if the provider or runtime cannot stream.
+      try {
+        const result = await analyzeTenderWithAI({ data: { inviteId } })
+        setAiAnalysis(result.analysis)
+      } catch {
+        setAiAnalysis(error instanceof Error ? error.message : 'AI analysis failed')
+      }
     } finally {
       setAiLoading(false)
     }
@@ -49,15 +96,15 @@ function TenderDetailPage() {
         </CardHeader>
         <CardContent>
           <Button onClick={runAiAnalysis} disabled={aiLoading}>
-            {aiLoading ? '分析中...' : '用歷史資料預測可能得標廠商'}
+            {aiLoading ? '分析中（串流輸出）...' : '用歷史資料預測可能得標廠商'}
           </Button>
           {aiAnalysis && (
-            <pre className="mt-4 whitespace-pre-wrap rounded-md border bg-muted p-4 text-sm leading-6">
-              {aiAnalysis}
-            </pre>
+            <div className="prose prose-sm mt-4 max-w-none rounded-md border bg-muted p-4 leading-6 dark:prose-invert">
+              <ReactMarkdown>{aiAnalysis}</ReactMarkdown>
+            </div>
           )}
           <p className="mt-3 text-sm text-muted-foreground">
-            使用 OpenAI-compatible Chat Completions API；請設定 OPENAI_API_KEY。預測僅供參考，不代表實際結果。
+            使用 OpenAI-compatible streaming Chat Completions API。預測僅供參考，不代表實際結果。
           </p>
         </CardContent>
       </Card>
