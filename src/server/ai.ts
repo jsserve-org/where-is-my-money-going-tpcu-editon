@@ -21,15 +21,72 @@ function compactDetail(detail: Record<string, string>) {
   }
 }
 
+function extractTenderKeywords(name: string) {
+  const normalized = name
+    .replace(/[()（）【】\[\]「」『』,，.。:：;；/\\-]/g, ' ')
+    .replace(/[0-9０-９]+/g, ' ')
+    .replace(/第[一二三四五六七八九十]+階段/g, ' ')
+    .replace(/一式|委外服務案|委託服務案|採購案|服務案|財物案|工程案/g, ' ')
+
+  const dictionary = [
+    '資通安全',
+    '資訊安全',
+    'ISMS',
+    'ISO27001',
+    '管理系統',
+    '資訊系統',
+    '網路',
+    '資安',
+    '安全',
+    '維護',
+    '建築',
+    '建築師',
+    '設計',
+    '監造',
+    '工程',
+    '營繕',
+    '保全',
+    '清潔',
+    '餐飲',
+    '印刷',
+    '設備',
+    '軟體',
+    '硬體',
+  ]
+
+  const keywordSet = new Set<string>()
+  const upperName = name.toUpperCase()
+  for (const word of dictionary) {
+    if (upperName.includes(word.toUpperCase())) keywordSet.add(word.toUpperCase())
+  }
+
+  for (const token of normalized.split(/\s+/)) {
+    const cleaned = token.trim()
+    if (cleaned.length >= 2 && cleaned.length <= 12) keywordSet.add(cleaned.toUpperCase())
+  }
+
+  return keywordSet
+}
+
 function scoreSimilarity(target: ReturnType<typeof compactDetail>, item: ReturnType<typeof compactDetail>) {
   let score = 0
-  if (target.category && target.category === item.category) score += 3
-  if (target.biddingMethod && target.biddingMethod === item.biddingMethod) score += 3
-  if (target.agencyUnit && item.agencyUnit && target.agencyUnit === item.agencyUnit) score += 2
-  const targetWords = new Set(target.name.split(/\s|、|等|一式|[0-9]+/).filter((w) => w.length >= 2))
-  for (const word of targetWords) {
-    if (item.name.includes(word)) score += 1
+  let topicalMatches = 0
+  const targetKeywords = extractTenderKeywords(target.name)
+  const itemKeywords = extractTenderKeywords(item.name)
+
+  for (const word of targetKeywords) {
+    if (itemKeywords.has(word) || item.name.toUpperCase().includes(word)) {
+      score += 6
+      topicalMatches += 1
+    }
   }
+
+  if (target.category && target.category === item.category) score += 2
+  if (target.biddingMethod && target.biddingMethod === item.biddingMethod) score += 1
+  if (target.agencyUnit && item.agencyUnit && target.agencyUnit === item.agencyUnit) score += 1
+
+  // A tender with no topical/name overlap is not a useful precedent even if method/category matches.
+  if (topicalMatches === 0) return 0
   return score
 }
 
@@ -47,6 +104,7 @@ export async function buildAnalysisPrompt(inviteId: string) {
     .map((row) => compactDetail(row.detailJson as Record<string, string>))
     .filter((item) => item.winner && item.caseNo !== target.caseNo)
     .map((item) => ({ ...item, score: scoreSimilarity(target, item) }))
+    .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 30)
 
@@ -66,6 +124,8 @@ export async function buildAnalysisPrompt(inviteId: string) {
 - amount 請用新台幣格式，例如：NT$1,234,567。
 - amount 請根據目前標案預算/採購金額、底價、以及相似歷史標案決標金額推估。
 - why 請用簡短繁體中文說明依據。
+- 只能根據「相似歷史標案」中的得標廠商預測，不要使用無關產業廠商。
+- 廠商必須與目前標案名稱/標的內容有明確關聯；例如資通安全/ISMS 標案不可預測建築師事務所、工程、營繕等不相關廠商。
 
 目前標案：
 ${JSON.stringify(target, null, 2)}
