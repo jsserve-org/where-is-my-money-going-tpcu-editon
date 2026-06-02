@@ -90,7 +90,11 @@ function scoreSimilarity(target: ReturnType<typeof compactDetail>, item: ReturnT
   return score
 }
 
-export async function buildAnalysisPrompt(inviteId: string) {
+type CompactTenderDetail = ReturnType<typeof compactDetail>
+
+type ScoredTenderExample = CompactTenderDetail & { score: number }
+
+async function buildAnalysisContext(inviteId: string) {
   const targetDetail = await fetchTenderDetail({ data: { inviteId } })
   const target = compactDetail(targetDetail as Record<string, string>)
 
@@ -112,6 +116,12 @@ export async function buildAnalysisPrompt(inviteId: string) {
     acc[item.winner] = (acc[item.winner] || 0) + 1
     return acc
   }, {})
+
+  return { target, examples, winnerCounts }
+}
+
+export async function buildAnalysisPrompt(inviteId: string) {
+  const { target, examples, winnerCounts } = await buildAnalysisContext(inviteId)
 
   return `You analyze tender procurement records and provide cautious predictive analysis using historical data only.
 
@@ -165,6 +175,44 @@ function normalizePredictions(value: unknown): TenderPrediction[] {
     .slice(0, 5)
 }
 
+function estimateAmount(examples: ScoredTenderExample[]) {
+  const amounts = examples
+    .map((item) => item.awardAmount || item.basePrice || item.budget)
+    .map((value) => Number(String(value).replace(/[^0-9]/g, '')))
+    .filter((value) => Number.isFinite(value) && value > 0)
+
+  if (!amounts.length) return '金額資料不足'
+  const average = Math.round(amounts.reduce((sum, value) => sum + value, 0) / amounts.length)
+  return `NT$${average.toLocaleString('en-US')}`
+}
+
+function fallbackPredictions(examples: ScoredTenderExample[]): TenderPrediction[] {
+  const byWinner = new Map<string, ScoredTenderExample[]>()
+  for (const example of examples) {
+    const list = byWinner.get(example.winner) || []
+    list.push(example)
+    byWinner.set(example.winner, list)
+  }
+
+  const ranked = [...byWinner.entries()]
+    .map(([company, companyExamples]) => ({
+      company,
+      examples: companyExamples,
+      totalScore: companyExamples.reduce((sum, item) => sum + item.score, 0),
+    }))
+    .sort((a, b) => b.totalScore - a.totalScore)
+    .slice(0, 5)
+
+  const topScore = ranked[0]?.totalScore || 1
+
+  return ranked.map((item) => ({
+    percent: Math.max(10, Math.min(85, Math.round((item.totalScore / topScore) * 75))),
+    company: item.company,
+    amount: estimateAmount(item.examples),
+    why: `依據 ${item.examples.length} 筆相似歷史標案與標案名稱/標的關聯推估。`,
+  }))
+}
+
 function missingKeyResponse() {
   return new Response('Missing OPENAI_API_KEY. Add OPENAI_API_KEY, and optionally OPENAI_BASE_URL / OPENAI_MODEL, then restart the app.', {
     status: 500,
@@ -185,9 +233,11 @@ export async function predictTenderWinnersJson(inviteId: string): Promise<{
     }
   }
 
+  const context = await buildAnalysisContext(inviteId)
+  const fallback = fallbackPredictions(context.examples)
   const prompt = `${await buildAnalysisPrompt(inviteId)}
 
-請呼叫 submit_predictions 工具回傳結果。不要在 content 中輸出文字。`
+請呼叫 submit_predictions 工具回傳結果。不要在 content 中輸出文字。若資料有限，仍須從相似歷史標案中選出最合理候選，不要回傳空陣列。`
 
   const response = await fetch(`${OPENAI_BASE_URL.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
@@ -236,6 +286,7 @@ export async function predictTenderWinnersJson(inviteId: string): Promise<{
 
   if (!response.ok) {
     const text = await response.text()
+    if (fallback.length) return { ok: true, predictions: fallback }
     return { ok: false, predictions: [], error: `OpenAI-compatible API error (${response.status}): ${text}` }
   }
 
@@ -244,10 +295,12 @@ export async function predictTenderWinnersJson(inviteId: string): Promise<{
   const args = message?.tool_calls?.[0]?.function?.arguments
   try {
     if (args) {
-      return { ok: true, predictions: normalizePredictions(JSON.parse(args)) }
+      const predictions = normalizePredictions(JSON.parse(args))
+      return { ok: true, predictions: predictions.length ? predictions : fallback }
     }
     if (message?.content) {
-      return { ok: true, predictions: normalizePredictions(JSON.parse(message.content)) }
+      const predictions = normalizePredictions(JSON.parse(message.content))
+      return { ok: true, predictions: predictions.length ? predictions : fallback }
     }
   } catch (error) {
     return {
@@ -257,7 +310,8 @@ export async function predictTenderWinnersJson(inviteId: string): Promise<{
     }
   }
 
-  return { ok: false, predictions: [], error: 'No predictions returned.' }
+  if (fallback.length) return { ok: true, predictions: fallback }
+  return { ok: false, predictions: [], error: 'No relevant historical predictions found.' }
 }
 
 export const analyzeTenderWithAI = createServerFn({ method: 'POST' })

@@ -35,6 +35,10 @@ function TenderDetailPage() {
         setAiError(result.error || "AI prediction failed");
         return;
       }
+      if (!result.predictions.length) {
+        setAiError("沒有找到足夠相似的歷史標案可供預測。");
+        return;
+      }
       setPredictions(result.predictions);
     } catch (error) {
       setAiError(
