@@ -6,6 +6,9 @@ services:
     environment:
       DATABASE_URL: postgres://tpcu:tpcu_password@postgres:5432/tpcu_tenders
       NODE_ENV: development
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
     ports:
       - "3000:3000"
     volumes:

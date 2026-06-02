@@ -45,6 +45,18 @@ npm run docker:down
 docker compose -f docker-compose.prod.yml down
 ```
 
+## AI analysis
+
+Set OpenAI-compatible API variables in `.env` or in your deployment environment:
+
+```bash
+OPENAI_API_KEY=...
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-4o-mini
+```
+
+The AI prediction button appears on each tender detail page. It uses historical `tender_details` rows from Postgres to rank likely winning companies. If the DB has little historical detail data, load detail pages or use the advanced detail loader first.
+
 ## Notes
 
 - The app container automatically runs `npm run db:setup` before starting.
