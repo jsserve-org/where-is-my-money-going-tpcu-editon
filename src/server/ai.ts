@@ -135,6 +135,7 @@ function buildAnalysisPromptFromContext({
 - percent 請用 0 到 100 的整數。
 - amount 請用新台幣格式，例如：NT$1,234,567。
 - amount 請根據目前標案預算/採購金額、底價、以及相似歷史標案決標金額推估。
+- 如果相似歷史「決標公告」沒有決標金額，仍需依目前標案預算/採購金額、底價或相似標案預算估算金額，不可留空。
 - why 請用簡短繁體中文說明依據。
 - 只能根據「相似歷史標案」中的得標廠商預測，不要使用無關產業廠商。
 - 廠商必須與目前標案名稱/標的內容有明確關聯；例如資通安全/ISMS 標案不可預測建築師事務所、工程、營繕等不相關廠商。
@@ -181,18 +182,44 @@ function normalizePredictions(value: unknown): TenderPrediction[] {
     .slice(0, 5)
 }
 
-function estimateAmount(examples: ScoredTenderExample[]) {
-  const amounts = examples
-    .map((item) => item.awardAmount || item.basePrice || item.budget)
-    .map((value) => Number(String(value).replace(/[^0-9]/g, '')))
-    .filter((value) => Number.isFinite(value) && value > 0)
-
-  if (!amounts.length) return '金額資料不足'
-  const average = Math.round(amounts.reduce((sum, value) => sum + value, 0) / amounts.length)
-  return `NT$${average.toLocaleString('en-US')}`
+function parseMoney(value: string) {
+  const amount = Number(String(value || '').replace(/[^0-9]/g, ''))
+  return Number.isFinite(amount) && amount > 0 ? amount : undefined
 }
 
-function fallbackPredictions(examples: ScoredTenderExample[]): TenderPrediction[] {
+function formatMoney(value: number) {
+  return `NT$${Math.round(value).toLocaleString('en-US')}`
+}
+
+function estimateAmount(examples: ScoredTenderExample[], target: CompactTenderDetail) {
+  const historicalAwardAmounts = examples
+    .map((item) => parseMoney(item.awardAmount))
+    .filter((value): value is number => typeof value === 'number')
+
+  if (historicalAwardAmounts.length) {
+    const average = historicalAwardAmounts.reduce((sum, value) => sum + value, 0) / historicalAwardAmounts.length
+    return formatMoney(average)
+  }
+
+  const targetBasePrice = parseMoney(target.basePrice)
+  if (targetBasePrice) return formatMoney(targetBasePrice * 0.98)
+
+  const targetBudget = parseMoney(target.budget)
+  if (targetBudget) return formatMoney(targetBudget * 0.9)
+
+  const historicalReferenceAmounts = examples
+    .flatMap((item) => [parseMoney(item.basePrice), parseMoney(item.budget)])
+    .filter((value): value is number => typeof value === 'number')
+
+  if (historicalReferenceAmounts.length) {
+    const average = historicalReferenceAmounts.reduce((sum, value) => sum + value, 0) / historicalReferenceAmounts.length
+    return formatMoney(average * 0.9)
+  }
+
+  return 'AI估算金額不足'
+}
+
+function fallbackPredictions(examples: ScoredTenderExample[], target: CompactTenderDetail): TenderPrediction[] {
   const byWinner = new Map<string, ScoredTenderExample[]>()
   for (const example of examples) {
     const list = byWinner.get(example.winner) || []
@@ -214,7 +241,7 @@ function fallbackPredictions(examples: ScoredTenderExample[]): TenderPrediction[
   return ranked.map((item) => ({
     percent: Math.max(10, Math.min(85, Math.round((item.totalScore / topScore) * 75))),
     company: item.company,
-    amount: estimateAmount(item.examples),
+    amount: estimateAmount(item.examples, target),
     why: `依據 ${item.examples.length} 筆相似歷史標案與標案名稱/標的關聯推估。`,
   }))
 }
@@ -240,7 +267,7 @@ export async function predictTenderWinnersJson(inviteId: string): Promise<{
   }
 
   const context = await buildAnalysisContext(inviteId)
-  const fallback = fallbackPredictions(context.examples)
+  const fallback = fallbackPredictions(context.examples, context.target)
   const prompt = `${buildAnalysisPromptFromContext(context)}
 
 請呼叫 submit_predictions 工具回傳結果。不要在 content 中輸出文字。若資料有限，仍須從相似歷史標案中選出最合理候選，不要回傳空陣列。`
