@@ -16,6 +16,11 @@
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
+    "db:setup": "npx tsx src/db/migrate.ts",
+    "docker:build": "docker compose build app",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f postgres",
     "check": "biome check"
   },
   "dependencies": {
@@ -54,6 +59,7 @@
     "@vitejs/plugin-react": "^6.0.1",
     "drizzle-kit": "^0.31.10",
     "jsdom": "^28.1.0",
+    "tsx": "^4.22.4",
     "typescript": "^6.0.2",
     "vite": "^8.0.0",
     "vitest": "^4.1.5"

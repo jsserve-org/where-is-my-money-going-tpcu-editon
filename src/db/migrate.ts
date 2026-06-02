@@ -1,6 +1,4 @@
-import { drizzle } from 'drizzle-orm/node-postgres'
 import { Pool } from 'pg'
-import * as schema from './schema'
 
 const connectionString = process.env.DATABASE_URL
 
@@ -9,12 +7,11 @@ if (!connectionString) {
 }
 
 const pool = new Pool({ connectionString })
-const db = drizzle(pool, { schema })
 
 async function main() {
   console.log('Creating tables...')
 
-  await db.execute(/* sql */ `
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS tenders (
       id SERIAL PRIMARY KEY,
       case_no VARCHAR(50) NOT NULL,
@@ -37,7 +34,7 @@ async function main() {
     CREATE INDEX IF NOT EXISTS idx_tenders_invite_id ON tenders(invite_id);
   `)
 
-  await db.execute(/* sql */ `
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS tender_details (
       id SERIAL PRIMARY KEY,
       invite_id VARCHAR(50) NOT NULL UNIQUE,

@@ -1,0 +1,49 @@
+services:
+  app:
+    build: .
+    container_name: tpcu-pay001-app
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://tpcu:tpcu_password@postgres:5432/tpcu_tenders
+      NODE_ENV: development
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - app_node_modules:/app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: sh -c "npm run db:setup && npm run dev -- --host 0.0.0.0"
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: tpcu-pay001-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tpcu_tenders
+      POSTGRES_USER: tpcu
+      POSTGRES_PASSWORD: tpcu_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tpcu -d tpcu_tenders"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  adminer:
+    image: adminer:latest
+    container_name: tpcu-pay001-adminer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  app_node_modules:
